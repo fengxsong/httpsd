@@ -26,11 +26,8 @@ scrape_configs:
     metrics_path: /probe
     relabel_configs:
       - source_labels: ['__meta_ip', '__meta_port']
-        separator: ':'
-        target_label: __param_target
-      - source_labels: ['__param_target']
-        regex: '(.+)'
-        replacement: 'tcp://${1}'
+        regex: (.+);(.+)
+        replacement: tcp://${1}:${2}
         target_label: __param_target
       - source_labels: ['__meta_password']
         target_label: __param_password
