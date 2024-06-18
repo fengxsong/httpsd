@@ -3,9 +3,8 @@ FROM golang:1.22 as builder
 ARG LDFLAGS
 
 WORKDIR /workspace
-COPY go.mod go.sum /workspace/
-RUN go mod download
-COPY transform handler.go main.go /workspace/
+
+COPY . /workspace/
 
 RUN CGO_ENABLED=0 go build -a -ldflags "${LDFLAGS}" -o httpsd && ./httpsd --version
 
