@@ -1,6 +1,6 @@
 # HTTPSD
 
-HTTP service discovery adapter for prometheus.
+HTTP service discovery adapter for prometheus. This project was initially created because nacos does not offer full prometheus support at the [latest version](https://github.com/alibaba/nacos/releases/tag/2.3.2).
 
 ## Implement your own transformer. :)
 
