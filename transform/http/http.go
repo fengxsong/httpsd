@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fengxsong/httpsd/transform"
 	"github.com/go-kit/log"
 	"github.com/grafana/regexp"
 	"github.com/prometheus/client_golang/prometheus"
@@ -31,6 +30,8 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+
+	"github.com/fengxsong/httpsd/transform"
 )
 
 var (
@@ -39,7 +40,7 @@ var (
 		Timeout:          model.Duration(60 * time.Second),
 		HTTPClientConfig: config.DefaultHTTPClientConfig,
 	}
-	userAgent        = fmt.Sprintf("HTTPSDTransformer/%s", version.Version)
+	userAgent        = fmt.Sprintf("HTTPServiceDiscoverer/%s", version.Version)
 	matchContentType = regexp.MustCompile(`^(?i:application\/json(;\s*charset=("utf-8"|utf-8))?)$`)
 )
 
@@ -47,6 +48,7 @@ var (
 type SDConfig struct {
 	HTTPClientConfig config.HTTPClientConfig `yaml:",inline"`
 	Timeout          model.Duration          `yaml:"timeout,omitempty"`
+	Type             string                  `yaml:"type"`
 	URL              string                  `yaml:"url"`
 }
 
@@ -54,10 +56,10 @@ type SDConfig struct {
 func (c *SDConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	*c = DefaultSDConfig
 	type plain SDConfig
-	err := unmarshal((*plain)(c))
-	if err != nil {
-		return err
-	}
+	return unmarshal((*plain)(c))
+}
+
+func (c *SDConfig) Validate() error {
 	if c.URL == "" {
 		return fmt.Errorf("URL is missing")
 	}
@@ -71,19 +73,21 @@ func (c *SDConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if parsedURL.Host == "" {
 		return fmt.Errorf("host is missing in URL")
 	}
+	if c.Type == "" {
+		return fmt.Errorf("didn't specify transformer type")
+	}
 	return c.HTTPClientConfig.Validate()
 }
-
-const httpSDURLLabel = model.MetaLabelPrefix + "url"
 
 // Discovery provides service discovery functionality based
 // on HTTP endpoints that return target groups in JSON format.
 type Discovery struct {
-	url          string
-	client       *http.Client
-	tgLastLength int
-	metrics      *httpMetrics
-	logger       log.Logger
+	url    string
+	client *http.Client
+	// can only run one type of transformer at a time.
+	tr      transform.Transformer
+	metrics *httpMetrics
+	logger  log.Logger
 }
 
 // NewDiscovery returns a new HTTP discovery for the given config.
@@ -93,6 +97,10 @@ func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPCli
 
 	if logger == nil {
 		logger = log.NewNopLogger()
+	}
+	tr := transform.Get(conf.Type)
+	if tr == nil {
+		return nil, fmt.Errorf("unsupported transformer type %s", conf.Type)
 	}
 
 	client, err := config.NewClientFromConfig(conf.HTTPClientConfig, "http", clientOpts...)
@@ -104,6 +112,7 @@ func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPCli
 	d := &Discovery{
 		url:     conf.URL,
 		client:  client,
+		tr:      tr,
 		metrics: m.(*httpMetrics),
 		logger:  logger,
 	}
@@ -111,8 +120,9 @@ func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPCli
 	return d, nil
 }
 
-func (d *Discovery) Refresh(ctx context.Context, t transform.Transformer, q url.Values) ([]*targetgroup.Group, error) {
-	req, err := http.NewRequest(t.HTTPMethod(), t.TargetURL(d.url, q), nil)
+func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.Group, error) {
+	start := time.Now()
+	req, err := http.NewRequest(d.tr.HTTPMethod(), d.tr.TargetURL(d.url, q), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +131,7 @@ func (d *Discovery) Refresh(ctx context.Context, t transform.Transformer, q url.
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := d.client.Do(req.WithContext(ctx))
+	d.metrics.discoverDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		d.metrics.failuresCount.Inc()
 		return nil, err
@@ -146,12 +157,13 @@ func (d *Discovery) Refresh(ctx context.Context, t transform.Transformer, q url.
 		return nil, err
 	}
 
-	targetGroups, err := t.Transform(b)
+	targetGroups, err := d.tr.Transform(b)
 	if err != nil {
 		d.metrics.failuresCount.Inc()
 		return nil, err
 	}
 
+	targetGroups = transform.Grouping(targetGroups)
 	for i, tg := range targetGroups {
 		if tg == nil {
 			d.metrics.failuresCount.Inc()
@@ -163,15 +175,7 @@ func (d *Discovery) Refresh(ctx context.Context, t transform.Transformer, q url.
 		if tg.Labels == nil {
 			tg.Labels = model.LabelSet{}
 		}
-		tg.Labels[httpSDURLLabel] = model.LabelValue(d.url)
 	}
-
-	// Generate empty updates for sources that disappeared.
-	l := len(targetGroups)
-	for i := l; i < d.tgLastLength; i++ {
-		targetGroups = append(targetGroups, &targetgroup.Group{Source: urlSource(d.url, i)})
-	}
-	d.tgLastLength = l
 
 	return targetGroups, nil
 }

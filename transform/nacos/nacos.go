@@ -15,9 +15,11 @@ import (
 	"github.com/fengxsong/httpsd/transform"
 )
 
+const name = "nacos"
+
 type impl struct{}
 
-func (impl) Name() string { return "nacos" }
+func (impl) Name() string { return name }
 
 func (impl) TargetURL(base string, q url.Values) string {
 	return fmt.Sprintf("%s/nacos/v1/ns/instance/list?%s", base, q.Encode())
@@ -38,14 +40,26 @@ func (impl) Transform(b []byte) ([]*targetgroup.Group, error) {
 			Targets: []model.LabelSet{
 				{model.AddressLabel: model.LabelValue(net.JoinHostPort(instance.Ip, strconv.Itoa(int(instance.Port))))},
 			},
-			Labels: make(model.LabelSet),
+			Labels: model.LabelSet{
+				labelName("cluster"): model.LabelValue(instance.ClusterName),
+				labelName("service"): model.LabelValue(instance.ServiceName),
+				labelName("group"):   model.LabelValue(instances.GroupName),
+			},
 		}
 		for k, v := range instance.Metadata {
-			g.Labels[model.LabelName(fmt.Sprintf("%s%s", model.MetaLabelPrefix, transform.FormalizeKeyName(k)))] = model.LabelValue(v)
+			g.Labels[labelName(k, "_metadata")] = model.LabelValue(v)
 		}
 		targetGroups = append(targetGroups, g)
 	}
 	return targetGroups, nil
+}
+
+func labelName(k string, args ...string) model.LabelName {
+	placeholder := ""
+	if len(args) > 0 {
+		placeholder = args[0]
+	}
+	return model.LabelName(fmt.Sprintf("%s%s%s_%s", model.MetaLabelPrefix, name, placeholder, transform.FormalizeLabelName(k)))
 }
 
 func init() {

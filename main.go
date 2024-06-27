@@ -10,11 +10,14 @@ import (
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/promlog"
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 	webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
+
+	httpdiscoverer "github.com/fengxsong/httpsd/transform/http"
 )
 
 func main() {
@@ -23,8 +26,11 @@ func main() {
 
 func run() int {
 	toolkitFlags := webflag.AddFlags(kingpin.CommandLine, ":8080")
-	configF := kingpin.Flag("config.file", "path of config file").Default("httpsd.yaml").String()
+	configF := kingpin.Flag("config.file", "path of config file").Default("").String()
 	targetURL := kingpin.Flag("target.url", "url to fetch targetgroups").Default("").String()
+	transformerT := kingpin.Flag("type", "transformer type").Default("").String()
+	username := kingpin.Flag("basic-auth.username", "username for basic HTTP authentication").Short('u').Default("").String()
+	password := kingpin.Flag("basic-auth.password", "password for basic HTTP authentication").Short('p').Default("").String()
 	promlogConfig := &promlog.Config{}
 	flag.AddFlags(kingpin.CommandLine, promlogConfig)
 	kingpin.Version(version.Print("httpsd"))
@@ -32,15 +38,28 @@ func run() int {
 	kingpin.Parse()
 	logger := promlog.New(promlogConfig)
 
-	cfg, _, err := loadConfigFile(*configF)
-	if os.IsNotExist(err) {
-		level.Info(logger).Log("msg", "using default http client config")
-		if *targetURL == "" {
-			level.Error(logger).Log("msg", "target.url missing")
+	var (
+		cfg = &httpdiscoverer.DefaultSDConfig
+		err error
+	)
+
+	if *configF != "" {
+		level.Info(logger).Log("msg", "using file configuration")
+		cfg, _, err = loadConfigFile(*configF)
+		if err != nil {
+			level.Error(logger).Log("err", err)
 			return 1
 		}
+	} else {
 		cfg.URL = *targetURL
-	} else if err != nil {
+		cfg.Type = *transformerT
+		cfg.HTTPClientConfig.BasicAuth = &config.BasicAuth{
+			Username: *username,
+			Password: config.Secret(*password),
+		}
+	}
+
+	if err = cfg.Validate(); err != nil {
 		level.Error(logger).Log("err", err)
 		return 1
 	}

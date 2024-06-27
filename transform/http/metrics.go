@@ -22,22 +22,30 @@ import (
 var _ discovery.DiscovererMetrics = (*httpMetrics)(nil)
 
 type httpMetrics struct {
-	failuresCount prometheus.Counter
+	failuresCount    prometheus.Counter
+	discoverDuration prometheus.Histogram
 
 	metricRegisterer discovery.MetricRegisterer
 }
 
 func newDiscovererMetrics(reg prometheus.Registerer) discovery.DiscovererMetrics {
+	const namespace = "prometheus_sd_http"
 	m := &httpMetrics{
+		discoverDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "discover_duration",
+			Help:      "Duration of each http discovery",
+		}),
 		failuresCount: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "prometheus_sd_http_failures_total",
-				Help: "Number of HTTP service discovery refresh failures.",
+				Namespace: namespace,
+				Name:      "failures_total",
+				Help:      "Number of HTTP service discovery refresh failures.",
 			}),
 	}
 
 	m.metricRegisterer = discovery.NewMetricRegisterer(reg, []prometheus.Collector{
-		m.failuresCount,
+		m.failuresCount, m.discoverDuration,
 	})
 
 	return m

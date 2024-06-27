@@ -13,7 +13,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"gopkg.in/yaml.v2"
 
-	"github.com/fengxsong/httpsd/transform"
 	httpdiscoverer "github.com/fengxsong/httpsd/transform/http"
 	_ "github.com/fengxsong/httpsd/transform/nacos"
 )
@@ -33,21 +32,10 @@ func httpErrorWithLogging(w http.ResponseWriter, logger log.Logger, err string, 
 
 func (h *sdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	q := req.URL.Query()
-	transformerName := q.Get("transformer")
-	if transformerName == "" {
-		httpErrorWithLogging(w, h.logger, "Transformer is missing", http.StatusBadRequest)
-		return
-	}
-	t := transform.Get(transformerName)
-	if t == nil {
-		httpErrorWithLogging(w, h.logger, "unsupported transformer", http.StatusBadRequest)
-		return
-	}
-	q.Del("transformer")
 	pretty, _ := strconv.ParseBool(q.Get("pretty"))
 	q.Del("pretty")
 
-	targetgroups, err := h.discoverer.Refresh(req.Context(), t, q)
+	targetgroups, err := h.discoverer.Refresh(req.Context(), q)
 	if err != nil {
 		httpErrorWithLogging(w, h.logger, err.Error(), http.StatusInternalServerError)
 		return
