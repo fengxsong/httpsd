@@ -27,8 +27,9 @@ func main() {
 func run() int {
 	toolkitFlags := webflag.AddFlags(kingpin.CommandLine, ":8080")
 	configF := kingpin.Flag("config.file", "path of config file").Default("").String()
-	targetURL := kingpin.Flag("target.url", "url to fetch targetgroups").Default("").String()
+	targetURL := kingpin.Flag("target.url", "url to fetch and transform into targetgroups").Default("").String()
 	transformerT := kingpin.Flag("type", "transformer type").Default("").String()
+	uriPath := kingpin.Flag("uri.path", "path of target url").Default("/targets").String()
 	username := kingpin.Flag("basic-auth.username", "username for basic HTTP authentication").Short('u').Default("").String()
 	password := kingpin.Flag("basic-auth.password", "password for basic HTTP authentication").Short('p').Default("").String()
 	promlogConfig := &promlog.Config{}
@@ -72,7 +73,7 @@ func run() int {
 		return 1
 	}
 
-	http.Handle("/sd", handler)
+	http.Handle(*uriPath, handler)
 	http.HandleFunc("/-/healthy", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Healthy"))

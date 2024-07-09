@@ -7,7 +7,7 @@ HTTP service discovery adapter for prometheus. This project was initially create
 ```golang
 type Transformer interface {
     Name() string
-    TargetURL(string, url.Values) string
+    TargetURL(string, url.Values) (string, error)
     HTTPMethod() string
     Transform([]byte) ([]*targetgroup.Group, error)
 }
@@ -22,7 +22,7 @@ scrape_configs:
   - job_name: freeswitch
     scrape_interval: 15s
     http_sd_configs:
-      - url: 'http://localhost:8080/sd?serviceName=fsproxy&namespaceId=test&pretty=true'
+      - url: 'http://localhost:8080/targets?serviceName=fsproxy&namespaceId=test&pretty=true'
     metrics_path: /probe
     relabel_configs:
       - source_labels: ['__meta_nacos_metadata_ip', '__meta_nacos_metadata_port']

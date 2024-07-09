@@ -122,7 +122,11 @@ func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPCli
 
 func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.Group, error) {
 	start := time.Now()
-	req, err := http.NewRequest(d.tr.HTTPMethod(), d.tr.TargetURL(d.url, q), nil)
+	url, err := d.tr.TargetURL(d.url, q)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(d.tr.HTTPMethod(), url, nil)
 	if err != nil {
 		return nil, err
 	}

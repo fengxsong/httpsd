@@ -2,6 +2,7 @@ package nacos
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,8 +22,18 @@ type impl struct{}
 
 func (impl) Name() string { return name }
 
-func (impl) TargetURL(base string, q url.Values) string {
-	return fmt.Sprintf("%s/nacos/v1/ns/instance/list?%s", base, q.Encode())
+func (impl) TargetURL(base string, q url.Values) (string, error) {
+	serviceName := q.Get("serviceName")
+	if serviceName == "" {
+		return "", errors.New("serviceName is required")
+	}
+	qs := url.Values{}
+	qs.Set("serviceName", serviceName)
+	qs.Set("groupName", q.Get("groupName"))
+	qs.Set("namespaceId", q.Get("namespaceId"))
+	qs.Set("clusters", q.Get("clusters"))
+	qs.Set("healthyOnly", q.Get("healthyOnly"))
+	return fmt.Sprintf("%s/nacos/v1/ns/instance/list?%s", base, qs.Encode()), nil
 }
 
 func (impl) HTTPBody() io.Reader { return nil }

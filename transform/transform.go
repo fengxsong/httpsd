@@ -12,7 +12,7 @@ import (
 
 type Transformer interface {
 	Name() string
-	TargetURL(string, url.Values) string
+	TargetURL(string, url.Values) (string, error)
 	HTTPMethod() string
 	Transform([]byte) ([]*targetgroup.Group, error)
 }
