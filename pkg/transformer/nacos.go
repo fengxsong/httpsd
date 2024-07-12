@@ -1,4 +1,4 @@
-package nacos
+package transformer
 
 import (
 	"encoding/json"
@@ -10,10 +10,11 @@ import (
 	"net/url"
 	"strconv"
 
+	nacosmodel "github.com/nacos-group/nacos-sdk-go/v2/model"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
 
-	"github.com/fengxsong/httpsd/transform"
+	"github.com/fengxsong/httpsd/pkg/utils"
 )
 
 const name = "nacos"
@@ -41,7 +42,7 @@ func (impl) HTTPBody() io.Reader { return nil }
 func (impl) HTTPMethod() string { return http.MethodGet }
 
 func (impl) Transform(b []byte) ([]*targetgroup.Group, error) {
-	var instances Service
+	var instances nacosmodel.Service
 	if err := json.Unmarshal(b, &instances); err != nil {
 		return nil, err
 	}
@@ -70,11 +71,11 @@ func labelName(k string, args ...string) model.LabelName {
 	if len(args) > 0 {
 		placeholder = args[0]
 	}
-	return model.LabelName(fmt.Sprintf("%s%s%s_%s", model.MetaLabelPrefix, name, placeholder, transform.FormalizeLabelName(k)))
+	return model.LabelName(fmt.Sprintf("%s%s%s_%s", model.MetaLabelPrefix, name, placeholder, utils.FormalizeLabelName(k)))
 }
 
 func init() {
-	if err := transform.Register(impl{}); err != nil {
+	if err := Register(impl{}); err != nil {
 		panic(err)
 	}
 }

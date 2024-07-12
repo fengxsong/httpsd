@@ -20,9 +20,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/go-kit/log"
 	"github.com/grafana/regexp"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,8 +33,11 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"gopkg.in/yaml.v2"
 
-	"github.com/fengxsong/httpsd/transform"
+	"github.com/fengxsong/httpsd/pkg/discovery"
+	"github.com/fengxsong/httpsd/pkg/transformer"
+	"github.com/fengxsong/httpsd/pkg/utils"
 )
 
 var (
@@ -48,7 +54,6 @@ var (
 type SDConfig struct {
 	HTTPClientConfig config.HTTPClientConfig `yaml:",inline"`
 	Timeout          model.Duration          `yaml:"timeout,omitempty"`
-	Type             string                  `yaml:"type"`
 	URL              string                  `yaml:"url"`
 }
 
@@ -73,46 +78,62 @@ func (c *SDConfig) Validate() error {
 	if parsedURL.Host == "" {
 		return fmt.Errorf("host is missing in URL")
 	}
-	if c.Type == "" {
-		return fmt.Errorf("didn't specify transformer type")
-	}
 	return c.HTTPClientConfig.Validate()
 }
 
-// Discovery provides service discovery functionality based
-// on HTTP endpoints that return target groups in JSON format.
-type Discovery struct {
-	url    string
-	client *http.Client
-	// can only run one type of transformer at a time.
-	tr      transform.Transformer
-	metrics *httpMetrics
-	logger  log.Logger
+type options struct {
+	configPath string
+	url        string
+	username   string
+	password   string
 }
 
-// NewDiscovery returns a new HTTP discovery for the given config.
-func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPClientOption, registerer prometheus.Registerer) (*Discovery, error) {
-	m := newDiscovererMetrics(registerer)
-	m.Register()
+func (o *options) AddFlags(app *kingpin.Application) {
+	app.Flag("http.config", "path of config file").Default("").StringVar(&o.configPath)
+	app.Flag("http.url", "url to fetch and convert into targetgroups").Default("").StringVar(&o.url)
+	app.Flag("http.basic-auth.username", "username for basic HTTP authentication").Short('u').Default("").StringVar(&o.username)
+	app.Flag("http.basic-auth.password", "password for basic HTTP authentication").Short('p').Default("").StringVar(&o.password)
+}
+
+func (o *options) Build(logger log.Logger, registerer prometheus.Registerer) (discovery.Discoverer, error) {
+	if o.configPath != "" {
+		content, err := os.ReadFile(o.configPath)
+		if err != nil {
+			return nil, err
+		}
+		if err = yaml.UnmarshalStrict(content, &DefaultSDConfig); err != nil {
+			return nil, err
+		}
+		DefaultSDConfig.HTTPClientConfig.SetDirectory(filepath.Dir(filepath.Dir(o.configPath)))
+	} else {
+		DefaultSDConfig.URL = o.url
+		if o.username != "" && o.password != "" {
+			DefaultSDConfig.HTTPClientConfig.BasicAuth = &config.BasicAuth{
+				Username: o.username,
+				Password: config.Secret(o.password),
+			}
+		}
+	}
+	if err := DefaultSDConfig.Validate(); err != nil {
+		return nil, err
+	}
 
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
-	tr := transform.Get(conf.Type)
-	if tr == nil {
-		return nil, fmt.Errorf("unsupported transformer type %s", conf.Type)
-	}
 
-	client, err := config.NewClientFromConfig(conf.HTTPClientConfig, "http", clientOpts...)
+	m := newDiscovererMetrics(registerer)
+	m.Register()
+
+	client, err := config.NewClientFromConfig(DefaultSDConfig.HTTPClientConfig, "http", config.WithUserAgent(userAgent))
 	if err != nil {
 		return nil, err
 	}
-	client.Timeout = time.Duration(conf.Timeout)
+	client.Timeout = time.Duration(DefaultSDConfig.Timeout)
 
 	d := &Discovery{
-		url:     conf.URL,
+		url:     DefaultSDConfig.URL,
 		client:  client,
-		tr:      tr,
 		metrics: m.(*httpMetrics),
 		logger:  logger,
 	}
@@ -120,13 +141,30 @@ func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPCli
 	return d, nil
 }
 
+// Discovery provides service discovery functionality based
+// on HTTP endpoints that return target groups in JSON format.
+type Discovery struct {
+	url     string
+	client  *http.Client
+	metrics *httpMetrics
+	logger  log.Logger
+}
+
 func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.Group, error) {
 	start := time.Now()
-	url, err := d.tr.TargetURL(d.url, q)
+	t := q.Get("transformer")
+	if t == "" {
+		t = "asitis"
+	}
+	tr := transformer.Get(t)
+	if tr == nil {
+		return nil, fmt.Errorf("unknown transformer %s", t)
+	}
+	targetUrl, err := tr.TargetURL(d.url, q)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(d.tr.HTTPMethod(), url, nil)
+	req, err := http.NewRequest(tr.HTTPMethod(), targetUrl, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -161,13 +199,13 @@ func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.G
 		return nil, err
 	}
 
-	targetGroups, err := d.tr.Transform(b)
+	targetGroups, err := tr.Transform(b)
 	if err != nil {
 		d.metrics.failuresCount.Inc()
 		return nil, err
 	}
 
-	targetGroups = transform.Grouping(targetGroups)
+	targetGroups = utils.Grouping(targetGroups)
 	for i, tg := range targetGroups {
 		if tg == nil {
 			d.metrics.failuresCount.Inc()
@@ -187,4 +225,8 @@ func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.G
 // urlSource returns a source ID for the i-th target group per URL.
 func urlSource(url string, i int) string {
 	return fmt.Sprintf("%s:%d", url, i)
+}
+
+func init() {
+	discovery.Register("http", &options{})
 }

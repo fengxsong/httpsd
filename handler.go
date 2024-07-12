@@ -4,21 +4,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"gopkg.in/yaml.v2"
 
-	httpdiscoverer "github.com/fengxsong/httpsd/transform/http"
-	_ "github.com/fengxsong/httpsd/transform/nacos"
+	"github.com/fengxsong/httpsd/pkg/discovery"
+	_ "github.com/fengxsong/httpsd/pkg/discovery/http"
+	_ "github.com/fengxsong/httpsd/pkg/discovery/nacos"
 )
 
+type options struct {
+	path string
+	t    string
+}
+
+func (o *options) AddFlags(app *kingpin.Application) {
+	app.Flag("uri.path", "path of target url").Default("/targets").StringVar(&o.path)
+	app.Flag("discoverer.type", "type of discoverer").Default("http").StringVar(&o.t)
+}
+
 type sdHandler struct {
-	discoverer *httpdiscoverer.Discovery
+	defaultT   string
+	discoverer map[string]discovery.Discoverer
 	logger     log.Logger
 }
 
@@ -35,7 +45,17 @@ func (h *sdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	pretty, _ := strconv.ParseBool(q.Get("pretty"))
 	q.Del("pretty")
 
-	targetgroups, err := h.discoverer.Refresh(req.Context(), q)
+	t := q.Get("discovery")
+	if t == "" {
+		t = h.defaultT
+	}
+
+	discovery := h.discoverer[t]
+	if discovery == nil {
+		httpErrorWithLogging(w, h.logger, fmt.Sprintf("unknown discoverer %s", t), http.StatusInternalServerError)
+		return
+	}
+	targetgroups, err := discovery.Refresh(req.Context(), q)
 	if err != nil {
 		httpErrorWithLogging(w, h.logger, err.Error(), http.StatusInternalServerError)
 		return
@@ -50,27 +70,19 @@ func (h *sdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func loadConfigFile(filename string) (*httpdiscoverer.SDConfig, []byte, error) {
-	cfg := &httpdiscoverer.DefaultSDConfig
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return cfg, nil, err
-	}
-	err = yaml.UnmarshalStrict([]byte(content), cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	cfg.HTTPClientConfig.SetDirectory(filepath.Dir(filepath.Dir(filename)))
-	return cfg, content, nil
-}
-
-func newSDHandler(cfg *httpdiscoverer.SDConfig, logger log.Logger, registerer prometheus.Registerer) (*sdHandler, error) {
-	discoverer, err := httpdiscoverer.NewDiscovery(cfg, logger, nil, registerer)
-	if err != nil {
-		return nil, err
-	}
-	return &sdHandler{
-		discoverer: discoverer,
+func newSDHandler(o *options, logger log.Logger, registerer prometheus.Registerer) (*sdHandler, error) {
+	handler := &sdHandler{
+		defaultT:   o.t,
+		discoverer: map[string]discovery.Discoverer{},
 		logger:     logger,
-	}, nil
+	}
+	for name, builder := range discovery.All() {
+		d, err := builder.Build(logger, registerer)
+		if d == nil || err != nil {
+			level.Info(logger).Log("msg", fmt.Sprintf("skip discoverer %s due to err: %s", name, err))
+			continue
+		}
+		handler.discoverer[name] = d
+	}
+	return handler, nil
 }
