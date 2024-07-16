@@ -52,8 +52,15 @@ func (h *sdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	discovery := h.discoverer[t]
 	if discovery == nil {
-		httpErrorWithLogging(w, h.logger, fmt.Sprintf("unknown discoverer %s", t), http.StatusInternalServerError)
-		return
+		if len(h.discoverer) > 1 {
+			httpErrorWithLogging(w, h.logger, fmt.Sprintf("unknown discoverer %s", t), http.StatusInternalServerError)
+			return
+		}
+		// use the only one
+		for _, d := range h.discoverer {
+			discovery = d
+			break
+		}
 	}
 	targetgroups, err := discovery.Refresh(req.Context(), q)
 	if err != nil {
@@ -83,6 +90,9 @@ func newSDHandler(o *options, logger log.Logger, registerer prometheus.Registere
 			continue
 		}
 		handler.discoverer[name] = d
+	}
+	if _, ok := handler.discoverer[o.t]; !ok {
+		return nil, fmt.Errorf("unknown discoverer %s", o.t)
 	}
 	return handler, nil
 }

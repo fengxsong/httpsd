@@ -28,6 +28,7 @@ import (
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/go-kit/log"
 	"github.com/grafana/regexp"
+	"github.com/mitchellh/mapstructure"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
@@ -38,6 +39,9 @@ import (
 	"github.com/fengxsong/httpsd/pkg/discovery"
 	"github.com/fengxsong/httpsd/pkg/transformer"
 	"github.com/fengxsong/httpsd/pkg/utils"
+
+	_ "github.com/fengxsong/httpsd/pkg/transformer/asitis"
+	_ "github.com/fengxsong/httpsd/pkg/transformer/nacos"
 )
 
 var (
@@ -52,9 +56,11 @@ var (
 
 // SDConfig is the configuration for HTTP based discovery.
 type SDConfig struct {
-	HTTPClientConfig config.HTTPClientConfig `yaml:",inline"`
+	HTTPClientConfig config.HTTPClientConfig `yaml:",inline" mapstructure:",squash"`
 	Timeout          model.Duration          `yaml:"timeout,omitempty"`
-	URL              string                  `yaml:"url"`
+
+	URL      string               `yaml:"url"`
+	Template transformer.Template `yaml:",inline" mapstructure:",squash"`
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
@@ -84,6 +90,7 @@ func (c *SDConfig) Validate() error {
 type options struct {
 	configPath string
 	url        string
+	ttype      string
 	username   string
 	password   string
 }
@@ -91,6 +98,7 @@ type options struct {
 func (o *options) AddFlags(app *kingpin.Application) {
 	app.Flag("http.config", "path of config file").Default("").StringVar(&o.configPath)
 	app.Flag("http.url", "url to fetch and convert into targetgroups").Default("").StringVar(&o.url)
+	app.Flag("http.type", "transformer type").Default("asitis").StringVar(&o.ttype)
 	app.Flag("http.basic-auth.username", "username for basic HTTP authentication").Short('u').Default("").StringVar(&o.username)
 	app.Flag("http.basic-auth.password", "password for basic HTTP authentication").Short('p').Default("").StringVar(&o.password)
 }
@@ -122,6 +130,19 @@ func (o *options) Build(logger log.Logger, registerer prometheus.Registerer) (di
 		logger = log.NewNopLogger()
 	}
 
+	tr := transformer.Get(o.ttype)
+	if tr == nil {
+		return nil, fmt.Errorf("unknown transformer %s", o.ttype)
+	}
+	if sampleConfig := tr.SampleConfig(); sampleConfig != nil {
+		if err := mapstructure.Decode(&DefaultSDConfig, sampleConfig); err != nil {
+			return nil, err
+		}
+		if err := tr.Init(sampleConfig); err != nil {
+			return nil, err
+		}
+	}
+
 	m := newDiscovererMetrics(registerer)
 	m.Register()
 
@@ -135,6 +156,7 @@ func (o *options) Build(logger log.Logger, registerer prometheus.Registerer) (di
 		url:     DefaultSDConfig.URL,
 		client:  client,
 		metrics: m.(*httpMetrics),
+		tr:      tr,
 		logger:  logger,
 	}
 
@@ -147,24 +169,17 @@ type Discovery struct {
 	url     string
 	client  *http.Client
 	metrics *httpMetrics
+	tr      transformer.Transformer
 	logger  log.Logger
 }
 
 func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.Group, error) {
 	start := time.Now()
-	t := q.Get("transformer")
-	if t == "" {
-		t = "asitis"
-	}
-	tr := transformer.Get(t)
-	if tr == nil {
-		return nil, fmt.Errorf("unknown transformer %s", t)
-	}
-	targetUrl, err := tr.TargetURL(d.url, q)
+	targetUrl, err := d.tr.TargetURL(d.url, q)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(tr.HTTPMethod(), targetUrl, nil)
+	req, err := http.NewRequest(d.tr.HTTPMethod(), targetUrl, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +214,7 @@ func (d *Discovery) Refresh(ctx context.Context, q url.Values) ([]*targetgroup.G
 		return nil, err
 	}
 
-	targetGroups, err := tr.Transform(b)
+	targetGroups, err := d.tr.Transform(ctx, b)
 	if err != nil {
 		d.metrics.failuresCount.Inc()
 		return nil, err

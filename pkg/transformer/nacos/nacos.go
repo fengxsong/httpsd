@@ -1,6 +1,7 @@
-package transformer
+package nacos
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
 
+	"github.com/fengxsong/httpsd/pkg/transformer"
 	"github.com/fengxsong/httpsd/pkg/utils"
 )
 
@@ -22,6 +24,12 @@ const name = "nacos"
 type impl struct{}
 
 func (impl) Name() string { return name }
+
+func (impl) SampleConfig() transformer.Config {
+	return nil
+}
+
+func (impl) Init(_ transformer.Config) error { return nil }
 
 func (impl) TargetURL(base string, q url.Values) (string, error) {
 	serviceName := q.Get("serviceName")
@@ -41,13 +49,17 @@ func (impl) HTTPBody() io.Reader { return nil }
 
 func (impl) HTTPMethod() string { return http.MethodGet }
 
-func (impl) Transform(b []byte) ([]*targetgroup.Group, error) {
+func (impl) Transform(_ context.Context, b []byte) ([]*targetgroup.Group, error) {
 	var instances nacosmodel.Service
 	if err := json.Unmarshal(b, &instances); err != nil {
 		return nil, err
 	}
+	return Transform(instances)
+}
+
+func Transform(service nacosmodel.Service) ([]*targetgroup.Group, error) {
 	var targetGroups []*targetgroup.Group
-	for _, instance := range instances.Hosts {
+	for _, instance := range service.Hosts {
 		g := &targetgroup.Group{
 			Targets: []model.LabelSet{
 				{model.AddressLabel: model.LabelValue(net.JoinHostPort(instance.Ip, strconv.Itoa(int(instance.Port))))},
@@ -55,7 +67,7 @@ func (impl) Transform(b []byte) ([]*targetgroup.Group, error) {
 			Labels: model.LabelSet{
 				labelName("cluster"): model.LabelValue(instance.ClusterName),
 				labelName("service"): model.LabelValue(instance.ServiceName),
-				labelName("group"):   model.LabelValue(instances.GroupName),
+				labelName("group"):   model.LabelValue(service.GroupName),
 			},
 		}
 		for k, v := range instance.Metadata {
@@ -75,7 +87,7 @@ func labelName(k string, args ...string) model.LabelName {
 }
 
 func init() {
-	if err := Register(impl{}); err != nil {
+	if err := transformer.Register(&impl{}); err != nil {
 		panic(err)
 	}
 }
